@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { ImageCropperProduct } from '@/components/ui/image-cropper-product';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
-import { validateFiles, formatFileSize } from '@/lib/fileValidation';
+import { validateFilesWithHash, formatFileSize } from '@/lib/fileValidation';
 import { v4 as uuidv4 } from 'uuid';
 
 type MediaItem = {
@@ -13,6 +13,7 @@ type MediaItem = {
   file?: File;
   isFeatured: boolean;
   mediaType: 'image';
+  fileHash?: string;
 };
 
 interface ProductImageManagerProps {
@@ -21,6 +22,17 @@ interface ProductImageManagerProps {
   maxImages?: number;
   maxFileSize?: number;
 }
+
+const urlCache = new Map<string, string>();
+
+const createSafeObjectURL = (file: File, fileId: string): string => {
+  if (urlCache.has(fileId)) {
+    return urlCache.get(fileId)!;
+  }
+  const url = URL.createObjectURL(file);
+  urlCache.set(fileId, url);
+  return url;
+};
 
 export function ProductImageManager({
   images,
@@ -34,46 +46,22 @@ export function ProductImageManager({
   const [isProcessing, setIsProcessing] = useState(false);
   const processingQueueRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileHashesRef = useRef<Map<string, string>>(new Map());
 
   const handleFileSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
-    console.log('=== handleFileSelect called ===');
-    console.log('FileList length:', files.length);
-    console.log('FileList contents:');
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      console.log(`  [${i}]:`, {
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        lastModified: file.lastModified
-      });
-    }
-
     if (processingQueueRef.current) {
-      console.log('Already processing, rejecting new upload');
       toast.info('Aguarde o processamento anterior terminar');
       return;
     }
 
     processingQueueRef.current = true;
     setIsProcessing(true);
-    console.log('Processing started');
 
     try {
       const remainingSlots = maxImages - images.length;
       const filesToAdd = Array.from(files).slice(0, remainingSlots);
-
-      console.log('After Array.from and slice:');
-      filesToAdd.forEach((f, idx) => {
-        console.log(`  [${idx}]:`, {
-          name: f.name,
-          size: f.size,
-          type: f.type,
-          lastModified: f.lastModified
-        });
-      });
 
       if (filesToAdd.length === 0) {
         toast.error(`Limite máximo de ${maxImages} imagens atingido`);
@@ -81,20 +69,15 @@ export function ProductImageManager({
       }
 
       const existingFiles = images.map(img => img.file).filter((f): f is File => f !== undefined);
+      const existingHashes = new Set(
+        images.map(img => img.fileHash).filter((h): h is string => h !== undefined)
+      );
 
-      console.log('Validating', filesToAdd.length, 'files against', existingFiles.length, 'existing files');
-      console.log('Files to add:', filesToAdd.map(f => ({ name: f.name, size: f.size, type: f.type, lastModified: f.lastModified })));
-
-      const validationResult = await validateFiles(filesToAdd, {
+      const validationResult = await validateFilesWithHash(filesToAdd, {
         maxFileSize,
         allowedTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/jpg'],
-        existingFiles
-      });
-
-      console.log('Validation result:', {
-        valid: validationResult.validFiles.length,
-        duplicates: validationResult.duplicates.length,
-        invalid: validationResult.invalid.length
+        existingFiles,
+        existingHashes
       });
 
       if (validationResult.invalid.length > 0) {
@@ -116,21 +99,24 @@ export function ProductImageManager({
 
       const newImages = validationResult.validFiles.map((file, index) => {
         const uniqueId = `new-${uuidv4()}`;
+        const url = createSafeObjectURL(file, uniqueId);
+        const fileHash = validationResult.hashes?.get(file.name) || '';
+
+        if (fileHash) {
+          fileHashesRef.current.set(uniqueId, fileHash);
+        }
+
         return {
           id: uniqueId,
-          url: URL.createObjectURL(file),
+          url: url,
           file: file,
           isFeatured: images.length === 0 && index === 0,
-          mediaType: 'image' as const
+          mediaType: 'image' as const,
+          fileHash: fileHash
         };
       });
 
-      console.log('Adding new images:', newImages.map(img => ({ id: img.id, fileName: img.file?.name })));
-      console.log('Existing images:', images.map(img => ({ id: img.id, fileName: img.file?.name })));
-
       const combinedImages = [...images, ...newImages];
-      console.log('Final combined images:', combinedImages.map(img => ({ id: img.id, fileName: img.file?.name })));
-
       onChange(combinedImages);
 
       const totalSize = validationResult.validFiles.reduce((sum, file) => sum + file.size, 0);
@@ -156,11 +142,19 @@ export function ProductImageManager({
         type: 'image/jpeg',
       });
 
-      const updatedImages = images.map(img =>
-        img.id === imageToRecrop.id
-          ? { ...img, url: URL.createObjectURL(croppedFile), file: croppedFile }
-          : img
-      );
+      const updatedImages = images.map(img => {
+        if (img.id === imageToRecrop.id) {
+          if (urlCache.has(img.id)) {
+            const oldUrl = urlCache.get(img.id);
+            if (oldUrl) {
+              URL.revokeObjectURL(oldUrl);
+            }
+          }
+          const newUrl = createSafeObjectURL(croppedFile, img.id);
+          return { ...img, url: newUrl, file: croppedFile };
+        }
+        return img;
+      });
 
       onChange(updatedImages);
       setShowCropper(false);
@@ -215,6 +209,14 @@ export function ProductImageManager({
 
     if (imageToRemove?.isFeatured && remainingImages.length > 0) {
       remainingImages[0].isFeatured = true;
+    }
+
+    if (urlCache.has(imageId)) {
+      const url = urlCache.get(imageId);
+      if (url) {
+        URL.revokeObjectURL(url);
+      }
+      urlCache.delete(imageId);
     }
 
     onChange(remainingImages);

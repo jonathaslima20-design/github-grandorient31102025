@@ -2,12 +2,14 @@ export interface FileValidationResult {
   validFiles: File[];
   duplicates: string[];
   invalid: Array<{ name: string; reason: string }>;
+  hashes?: Map<string, string>;
 }
 
 export interface FileValidationOptions {
   maxFileSize?: number;
   allowedTypes?: string[];
   existingFiles?: File[];
+  existingHashes?: Set<string>;
 }
 
 export const createFileSignature = (file: File): string => {
@@ -47,17 +49,10 @@ export const validateFiles = async (
 
   const fileArray = Array.from(files);
 
-  console.log('Starting validation:');
-  console.log(`  Files to validate: ${fileArray.length}`);
-  console.log(`  Existing files: ${existingFiles.length}`);
-  console.log(`  Existing signatures:`, Array.from(existingSignatures));
-
   for (const file of fileArray) {
     const fileSignature = createFileSignature(file);
-    console.log(`Checking file: ${file.name}, signature: ${fileSignature}`);
 
     if (file.size > maxFileSize * 1024 * 1024) {
-      console.log(`  -> INVALID: Size exceeds limit`);
       result.invalid.push({
         name: file.name,
         reason: `Tamanho excede ${maxFileSize}MB`
@@ -66,7 +61,6 @@ export const validateFiles = async (
     }
 
     if (!allowedTypes.some(type => file.type.startsWith(type.split('/')[0]) || file.type === type)) {
-      console.log(`  -> INVALID: Type not allowed`);
       result.invalid.push({
         name: file.name,
         reason: 'Tipo de arquivo não permitido'
@@ -75,23 +69,78 @@ export const validateFiles = async (
     }
 
     if (existingSignatures.has(fileSignature)) {
-      console.log(`  -> DUPLICATE: Already exists in uploaded images`);
       result.duplicates.push(file.name);
       continue;
     }
 
     if (processedSignatures.has(fileSignature)) {
-      console.log(`  -> DUPLICATE: Already in current batch`);
       result.duplicates.push(file.name);
       continue;
     }
 
-    console.log(`  -> VALID: Adding to valid files`);
     processedSignatures.add(fileSignature);
     result.validFiles.push(file);
   }
 
-  console.log(`Validation complete: ${result.validFiles.length} valid, ${result.duplicates.length} duplicates, ${result.invalid.length} invalid`);
+  return result;
+};
+
+export const validateFilesWithHash = async (
+  files: File[],
+  options: FileValidationOptions = {}
+): Promise<FileValidationResult> => {
+  const {
+    maxFileSize = 5,
+    allowedTypes = ['image/png', 'image/jpeg', 'image/webp', 'image/jpg'],
+    existingFiles = [],
+    existingHashes = new Set()
+  } = options;
+
+  const result: FileValidationResult = {
+    validFiles: [],
+    duplicates: [],
+    invalid: [],
+    hashes: new Map()
+  };
+
+  const fileArray = Array.from(files);
+  const processedHashes = new Set<string>();
+
+  for (const file of fileArray) {
+    if (file.size > maxFileSize * 1024 * 1024) {
+      result.invalid.push({
+        name: file.name,
+        reason: `Tamanho excede ${maxFileSize}MB`
+      });
+      continue;
+    }
+
+    if (!allowedTypes.some(type => file.type.startsWith(type.split('/')[0]) || file.type === type)) {
+      result.invalid.push({
+        name: file.name,
+        reason: 'Tipo de arquivo não permitido'
+      });
+      continue;
+    }
+
+    try {
+      const fileHash = await generateFileHash(file);
+
+      if (existingHashes.has(fileHash) || processedHashes.has(fileHash)) {
+        result.duplicates.push(file.name);
+        continue;
+      }
+
+      processedHashes.add(fileHash);
+      result.validFiles.push(file);
+      result.hashes!.set(file.name, fileHash);
+    } catch (error) {
+      result.invalid.push({
+        name: file.name,
+        reason: 'Erro ao processar arquivo'
+      });
+    }
+  }
 
   return result;
 };
