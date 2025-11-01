@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Upload, X, Star, Image as ImageIcon, Scissors, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ImageCropperProduct } from '@/components/ui/image-cropper-product';
@@ -23,17 +23,6 @@ interface ProductImageManagerProps {
   maxFileSize?: number;
 }
 
-const urlCache = new Map<string, string>();
-
-const createSafeObjectURL = (file: File, fileId: string): string => {
-  if (urlCache.has(fileId)) {
-    return urlCache.get(fileId)!;
-  }
-  const url = URL.createObjectURL(file);
-  urlCache.set(fileId, url);
-  return url;
-};
-
 export function ProductImageManager({
   images,
   onChange,
@@ -46,7 +35,15 @@ export function ProductImageManager({
   const [isProcessing, setIsProcessing] = useState(false);
   const processingQueueRef = useRef<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const fileHashesRef = useRef<Map<string, string>>(new Map());
+  const fileReferencesRef = useRef<Map<string, { file: File; url: string }>>(new Map());
+
+  useEffect(() => {
+    return () => {
+      fileReferencesRef.current.forEach(({ url }) => {
+        URL.revokeObjectURL(url);
+      });
+    };
+  }, []);
 
   const handleFileSelect = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -99,12 +96,10 @@ export function ProductImageManager({
 
       const newImages = validationResult.validFiles.map((file, index) => {
         const uniqueId = `new-${uuidv4()}`;
-        const url = createSafeObjectURL(file, uniqueId);
+        const url = URL.createObjectURL(file);
         const fileHash = validationResult.hashes?.get(file.name) || '';
 
-        if (fileHash) {
-          fileHashesRef.current.set(uniqueId, fileHash);
-        }
+        fileReferencesRef.current.set(uniqueId, { file, url });
 
         return {
           id: uniqueId,
@@ -144,13 +139,14 @@ export function ProductImageManager({
 
       const updatedImages = images.map(img => {
         if (img.id === imageToRecrop.id) {
-          if (urlCache.has(img.id)) {
-            const oldUrl = urlCache.get(img.id);
-            if (oldUrl) {
-              URL.revokeObjectURL(oldUrl);
-            }
+          const oldRef = fileReferencesRef.current.get(img.id);
+          if (oldRef) {
+            URL.revokeObjectURL(oldRef.url);
           }
-          const newUrl = createSafeObjectURL(croppedFile, img.id);
+
+          const newUrl = URL.createObjectURL(croppedFile);
+          fileReferencesRef.current.set(img.id, { file: croppedFile, url: newUrl });
+
           return { ...img, url: newUrl, file: croppedFile };
         }
         return img;
@@ -211,12 +207,10 @@ export function ProductImageManager({
       remainingImages[0].isFeatured = true;
     }
 
-    if (urlCache.has(imageId)) {
-      const url = urlCache.get(imageId);
-      if (url) {
-        URL.revokeObjectURL(url);
-      }
-      urlCache.delete(imageId);
+    const ref = fileReferencesRef.current.get(imageId);
+    if (ref) {
+      URL.revokeObjectURL(ref.url);
+      fileReferencesRef.current.delete(imageId);
     }
 
     onChange(remainingImages);

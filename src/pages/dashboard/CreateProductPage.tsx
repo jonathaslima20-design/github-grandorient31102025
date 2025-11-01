@@ -67,6 +67,10 @@ export default function CreateProductPage() {
   const [isPriceTiersValid, setIsPriceTiersValid] = useState(true);
   const [isSizesColorsOpen, setIsSizesColorsOpen] = useState(false);
 
+  const handleProductImagesChange = (newImages: typeof productImages) => {
+    setProductImages(newImages);
+  };
+
   const form = useForm<ProductFormData>({
     resolver: zodResolver(productSchema),
     defaultValues: {
@@ -473,7 +477,7 @@ export default function CreateProductPage() {
             <CardContent className="space-y-6">
               <ProductImageManager
                 images={productImages}
-                onChange={setProductImages}
+                onChange={handleProductImagesChange}
                 maxImages={10}
                 maxFileSize={5}
               />
